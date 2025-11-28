@@ -1,1 +1,291 @@
+<!doctype html>
+<html lang="ar">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Minecraft-like Voxel (HTML)</title>
+  <style>
+    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial}
+    #overlay{
+      position: absolute; left: 12px; top: 12px; z-index: 10;
+      background: rgba(0,0,0,0.45); color: #fff; padding: 8px 12px; border-radius: 8px;
+      font-size: 14px; line-height:1.4;
+    }
+    #btnStart { margin-top:6px; padding:6px 10px; border-radius:6px; border: none; cursor:pointer; }
+    canvas{display:block}
+    #hint { position:absolute; right:12px; bottom:12px; color:#fff; background:rgba(0,0,0,0.35); padding:6px 10px; border-radius:8px; font-size:13px;}
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    تحكم: WASD للحركة — الماوس للنظر<br>
+    انقر يمين لحذف بلوك — انقر يسار لوضع بلوك<br>
+    <button id="btnStart">ابدأ (انقر لتفعيل تحكم الماوس)</button>
+  </div>
+  <div id="hint">اختر نوع البلوك: <select id="blockType">
+    <option value="grass">Grass</option>
+    <option value="dirt">Dirt</option>
+    <option value="stone">Stone</option>
+    <option value="wood">Wood</option>
+    <option value="sand">Sand</option>
+  </select></div>
 
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.154.0/build/three.module.js';
+    import { PointerLockControls } from 'https://unpkg.com/three@0.154.0/examples/jsm/controls/PointerLockControls.js';
+
+    // --- scene / renderer / camera
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x8fd3ff); // sky
+    const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 1000);
+    camera.position.set(0, 2, 5);
+
+    const renderer = new THREE.WebGLRenderer({antialias:true});
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    document.body.appendChild(renderer.domElement);
+
+    // lights
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.9);
+    hemi.position.set(0, 200, 0);
+    scene.add(hemi);
+
+    const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+    dir.position.set(-1,2,1);
+    scene.add(dir);
+
+    // controls (pointer lock)
+    const controls = new PointerLockControls(camera, renderer.domElement);
+    const btnStart = document.getElementById('btnStart');
+    btnStart.addEventListener('click', () => controls.lock());
+
+    controls.addEventListener('lock', ()=> btnStart.style.display='none');
+    controls.addEventListener('unlock', ()=> btnStart.style.display='inline-block');
+
+    scene.add(controls.getObject());
+
+    // movement state
+    const move = { forward:false, backward:false, left:false, right:false, jump:false };
+    const velocity = new THREE.Vector3();
+    let canJump = false;
+
+    document.addEventListener('keydown', (e) => {
+      if(e.code === 'KeyW') move.forward = true;
+      if(e.code === 'KeyS') move.backward = true;
+      if(e.code === 'KeyA') move.left = true;
+      if(e.code === 'KeyD') move.right = true;
+      if(e.code === 'Space' && canJump){ velocity.y += 6; canJump = false; }
+    });
+    document.addEventListener('keyup', (e) => {
+      if(e.code === 'KeyW') move.forward = false;
+      if(e.code === 'KeyS') move.backward = false;
+      if(e.code === 'KeyA') move.left = false;
+      if(e.code === 'KeyD') move.right = false;
+    });
+
+    // simple grid-based world data
+    const world = {};
+    const BLOCK_SIZE = 1;
+    const worldWidth = 32; // x
+    const worldDepth = 32; // z
+    const maxHeight = 6; // y
+
+    // materials per block type (simple colored)
+    const materials = {
+      grass: new THREE.MeshStandardMaterial({color:0x67b16f}),
+      dirt:  new THREE.MeshStandardMaterial({color:0x8b5a2b}),
+      stone: new THREE.MeshStandardMaterial({color:0x909090}),
+      wood:  new THREE.MeshStandardMaterial({color:0x8b6e4a}),
+      sand:  new THREE.MeshStandardMaterial({color:0xe9dd9f})
+    };
+
+    // create a group for blocks
+    const blocksGroup = new THREE.Group();
+    scene.add(blocksGroup);
+
+    // helper to key coords
+    function key(x,y,z){ return `${x},${y},${z}`; }
+
+    // generate simple terrain (heightmap with sine + randomness)
+    for(let ix= -worldWidth/2; ix < worldWidth/2; ix++){
+      for(let iz= -worldDepth/2; iz < worldDepth/2; iz++){
+        const height = Math.floor( (Math.sin(ix*0.2) + Math.cos(iz*0.15)) * 1.5 + 2 + Math.random()*1.2 );
+        for(let y=0; y<height; y++){
+          const type = (y===height-1) ? 'grass' : (y>=height-3 ? 'dirt' : 'stone');
+          addBlock(ix, y, iz, type, false);
+        }
+      }
+    }
+
+    // raycaster for interaction
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+
+    // selected block type from UI
+    const blockTypeSelect = document.getElementById('blockType');
+
+    // left click = place, right click = remove
+    renderer.domElement.addEventListener('mousedown', onMouseDown);
+
+    function onMouseDown(event){
+      if(!controls.isLocked) return;
+      // cast a ray from camera forward
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+      raycaster.set(camera.position, dir);
+      const intersects = raycaster.intersectObjects(blocksGroup.children, false);
+
+      if(event.button === 2){ // right-click remove
+        if(intersects.length > 0){
+          const face = intersects[0];
+          const obj = face.object;
+          const pos = obj.userData.pos; // {x,y,z}
+          removeBlock(pos.x, pos.y, pos.z);
+        }
+      } else if(event.button === 0){ // left-click place
+        // place next to the clicked face, or place in front if none
+        if(intersects.length > 0){
+          const face = intersects[0];
+          const hit = face.point;
+          // compute integer block coordinates of the hit block
+          const normal = face.face.normal;
+          const blockObj = face.object;
+          const p = blockObj.userData.pos;
+          // place at p + normal
+          const nx = p.x + Math.round(normal.x);
+          const ny = p.y + Math.round(normal.y);
+          const nz = p.z + Math.round(normal.z);
+          addBlock(nx, ny, nz, blockTypeSelect.value, true);
+        } else {
+          // nothing hit: place a block a few units ahead
+          const placePos = camera.position.clone().add(dir.multiplyScalar(3));
+          const bx = Math.round(placePos.x);
+          const by = Math.round(placePos.y - 0.5);
+          const bz = Math.round(placePos.z);
+          addBlock(bx, by, bz, blockTypeSelect.value, true);
+        }
+      }
+    }
+
+    // prevent context menu on right click
+    window.addEventListener('contextmenu', e => e.preventDefault());
+
+    // addBlock / removeBlock functions
+    function addBlock(x,y,z, type='dirt', record=true){
+      const k = key(x,y,z);
+      if(world[k]) return; // already exists
+      world[k] = {type};
+
+      const geom = new THREE.BoxGeometry(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+      const mat = materials[type] || materials.dirt;
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.position.set(x, y, z);
+      mesh.userData.pos = {x,y,z};
+      // optional small outline
+      //mesh.material = mat;
+      blocksGroup.add(mesh);
+      return mesh;
+    }
+
+    function removeBlock(x,y,z){
+      const k = key(x,y,z);
+      if(!world[k]) return;
+      delete world[k];
+      const found = blocksGroup.children.find(m => {
+        const p = m.userData.pos;
+        return p && p.x===x && p.y===y && p.z===z;
+      });
+      if(found){
+        blocksGroup.remove(found);
+        found.geometry.dispose();
+        // don't dispose material since shared
+      }
+    }
+
+    // simple floor (plane under world)
+    const floorGeo = new THREE.PlaneGeometry(100,100);
+    const floorMat = new THREE.MeshStandardMaterial({color: 0x559955, roughness:1});
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI/2;
+    floor.position.y = -1;
+    scene.add(floor);
+
+    // small skybox-ish gradient using large sphere
+    const skyGeo = new THREE.SphereGeometry(200,32,32);
+    const skyMat = new THREE.MeshBasicMaterial({color:0x8fd3ff, side:THREE.BackSide});
+    const sky = new THREE.Mesh(skyGeo, skyMat);
+    scene.add(sky);
+
+    // animation loop
+    let prevTime = performance.now();
+    function animate(){
+      requestAnimationFrame(animate);
+      const time = performance.now();
+      const delta = (time - prevTime) / 1000;
+      prevTime = time;
+
+      if(controls.isLocked){
+        // movement physics (very simple)
+        const speed = 6;
+        if(move.forward) velocity.z = -speed;
+        else if(move.backward) velocity.z = speed;
+        else velocity.z = 0;
+        if(move.left) velocity.x = -speed;
+        else if(move.right) velocity.x = speed;
+        else velocity.x = 0;
+
+        // apply gravity
+        velocity.y -= 9.8 * delta;
+
+        // translate controls
+        controls.moveRight( velocity.x * delta );
+        controls.moveForward( velocity.z * delta );
+        controls.getObject().position.y += velocity.y * delta;
+
+        // ground collision: simple ground at y = 0 (blocks exist above)
+        if(controls.getObject().position.y < 1.5){
+          velocity.y = 0;
+          controls.getObject().position.y = 1.5;
+          canJump = true;
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // handle resize
+    window.addEventListener('resize', () => {
+      camera.aspect = innerWidth/innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    // helpful debug camera reposition: press R to reset to spawn
+    window.addEventListener('keydown', (e) => {
+      if(e.key.toLowerCase() === 'r'){
+        controls.getObject().position.set(0,2,5);
+        velocity.set(0,0,0);
+      }
+    });
+
+    // nice to have: show crosshair
+    const cross = document.createElement('div');
+    cross.style.position='absolute';
+    cross.style.left='50%';
+    cross.style.top='50%';
+    cross.style.width='10px';
+    cross.style.height='10px';
+    cross.style.margin='-5px 0 0 -5px';
+    cross.style.borderRadius='50%';
+    cross.style.background='rgba(255,255,255,0.8)';
+    cross.style.zIndex='9';
+    document.body.appendChild(cross);
+
+    // tiny instructions overlay update
+    const overlay = document.getElementById('overlay');
+    overlay.innerHTML += '<div style="margin-top:6px;font-size:12px;opacity:0.9">اضغط R لإعادة الموضع</div>';
+
+  </script>
+</body>
+</html>
