@@ -1,0 +1,8 @@
+{
+  "pack.name": "حزمة إزالة الخنازير (عربى فصحى)",
+  "pack.description": "حزمة بيانات تستبدل الخنازير بلاما وتمنع إسقاط لحم الخنزير.",
+  "entity.minecraft.pig": "خنزير (مُحذوف)",
+  "entity.minecraft.llama": "لاما",
+  "item.minecraft.porkchop": "لحم خنزير",
+  "item.minecraft.cooked_porkchop": "لحم خنزير مطبوخ"
+}
